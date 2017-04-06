@@ -1,0 +1,23 @@
+{
+	"deviceVendor": "nil",
+	"deviceName": "PSMSDevice",
+	"author": "InfiniteLlamas",
+	"version": "0.1a",
+	"lastModified": "2017-03-31T00:00:00.000Z",
+	"interfaces": {
+		"tracker": {
+			"count": 3,
+			"position": true,
+			"orientation": true
+		},
+		"button": {
+            "count": 1
+        }
+	},
+	"semantic": {
+		"hmd": "tracker/0",
+		"left": "tracker/1",
+		"right":"tracker/2",
+		"button1": "button/0"
+	}
+}
