@@ -16,9 +16,9 @@ To specify which controller should be used for which tracker, include this in yo
 		}
 	}],
 	"aliases": {
-		"/me/head": "/inf_psmove_osvr_connector/PSMS OSVR Plugin/tracker/0",
-		"/me/hands/right": "/inf_psmove_osvr_connector/PSMS OSVR Plugin/tracker/1",
-		"/me/hands/left": "/inf_psmove_osvr_connector/PSMS OSVR Plugin/tracker/2"
+		"/me/head": "/inf_psmove_osvr_connector/PSMS OSVR Plugin/semantic/hmd",
+		"/me/hands/left": "/inf_psmove_osvr_connector/PSMS OSVR Plugin/semantic/left",
+		"/me/hands/right": "/inf_psmove_osvr_connector/PSMS OSVR Plugin/semantic/right"
 	}
 ```
 
@@ -30,11 +30,12 @@ It will make a tracker device regardless of whether a controller actually exists
 
 There are no configs for rotation offsets etc. 
 
-TODO:
+TODO (priority in order):
+- Button support
 - Offsets
-- Clean up stdout
 - Auto-Reconnect to PSMS
 - Handle properly if controller doesn't exist
+- Clean up stdout
 - eta son.
 
 **notes**
