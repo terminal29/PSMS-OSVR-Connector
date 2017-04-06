@@ -1,2 +1,43 @@
 # PSMS-OSVR-Connector
 Plugin for OSVR that uses PSMoveService to connect HMD, left, and right hands to PS Move controllers.
+
+# How to use 
+Just extract the dll and json to your OSVR server plugins folder.
+
+To specify which controller should be used for which tracker, include this in your osvr server config:
+```
+  "drivers": [{
+		"plugin": "inf_psmove_osvr_connector",
+		"driver": "PSMSDevice",
+		"params": {
+			"hmdController": 0,
+			"leftHandController": 1,
+			"rightHandController": 2
+		}
+	}],
+	"aliases": {
+		"/me/head": "/inf_psmove_osvr_connector/PSMS OSVR Plugin/tracker/0",
+		"/me/hands/right": "/inf_psmove_osvr_connector/PSMS OSVR Plugin/tracker/1",
+		"/me/hands/left": "/inf_psmove_osvr_connector/PSMS OSVR Plugin/tracker/2"
+	}
+```
+
+Where 0, 1, and 2 are the *controller ID* in PSMoveConfig of the controllers you wish to map.
+
+If you dont want to map the left and right hands, and just use the head, remove them from the params.
+
+It will make a tracker device regardless of whether a controller actually exists there, and will not reconnect to a controller if it goes flat for example, I will be working on fixing this some time soon but for now it works enough.
+
+There are no configs for rotation offsets etc. 
+
+TODO:
+- Offsets
+- Clean up stdout
+- Auto-Reconnect to PSMS
+- Handle properly if controller doesn't exist
+- eta son.
+
+**notes**
+- Start PSMS before OSVR Server
+- Tested with PSMS alpha ver. 8.2.0
+- Works with OSVR-Steamvr for HMD Only, I don't think OSVR-Steamvr works with OSVR defined controllers just yet.
