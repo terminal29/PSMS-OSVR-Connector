@@ -2,7 +2,7 @@
 Plugin for OSVR that uses PSMoveService to connect HMD, left, and right hands to PS Move controllers.
 
 # How to use 
-Just extract the dll and json to your OSVR server plugins folder.
+Just extract the plugin dll and json to your OSVR server plugins folder, and from your PSMoveService folder you should find a PSMoveService_CAPI.dll file, copy that to your OSVR server root/bin folder. Please ensure it is at least from version >= PSMS v9.0a8.2.0.
 
 To specify which controller should be used for which tracker, include this in your osvr server config:
 ```
