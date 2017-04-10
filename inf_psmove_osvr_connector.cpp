@@ -37,39 +37,27 @@
 // 3rd party includes
 #include <PSMoveClient_CAPI.h>
 #include <ClientGeometry_CAPI.h>
-#include <boost/math/quaternion.hpp>
-#include <boost/algorithm/string.hpp>
 
+#define M_PI 3.14159265358979323846 
 
-# define M_PI           3.14159265358979323846 
-/*
-Example config JSON file for pairing controllers with their osvr device.
+#define DEVICE_NAME "PSMSDevice"
+#define CONSOLE_PREFIX "[PSMS OSVR Plugin]"
 
-{"controller_device_pairing":{[
-		"hmd":"00:00:00:00:00",
-		"lefthand" : "00:00:00:00:01",
-		"righthand" : "00:00:00:00:02",
-	]}
-}
-*/
+#define DEFAULT_TIMEOUT 2000
 
-//
-#define PLUGIN_NAME "PSMS OSVR Plugin"
-
-// Anonymous namespace to avoid symbol collision
 namespace {
 
 	class PSMSDevice {
 	public:
 		PSMSDevice(OSVR_PluginRegContext ctx, int par_hmdControllerID, int par_leftHandControllerID, int par_rightHandControllerID) {
-			/// Create the initialization options
+			// Create OSVR Device options
 			OSVR_DeviceInitOptions opts = osvrDeviceCreateInitOptions(ctx);
 
-			// I know theres a better way to do this but i cant be bothered atm.
+			// Set local vars with controller IDs
+			// I know there's a more concise way to do this part
 			hmdControllerID = par_hmdControllerID;
 			leftControllerID = par_leftHandControllerID;
 			rightControllerID = par_rightHandControllerID;
-			std::cout << par_hmdControllerID << par_leftHandControllerID << par_rightHandControllerID << std::endl;
 
 			// Set up all connected & Requested controllers
 			if (hmdControllerID != -1) {
@@ -87,22 +75,20 @@ namespace {
 				PSM_AllocateControllerListener(rightControllerID);
 				PSM_StartControllerDataStream(rightControllerID, PSMStreamFlags_includePositionData | PSMStreamFlags_includeCalibratedSensorData, 1000);
 			}
-			
+
 			// configure our tracker
 			osvrDeviceTrackerConfigure(opts, &m_tracker);
-			
+
 			//Configure button steam. 
-			
-			// TODO Remember to add flags to data stream when including button presses!!!!!!!!!
 			//osvrDeviceButtonConfigure(opts, &m_buttons, 1);
 
-			/// Create the device token with the options
-			m_dev.initAsync(ctx, PLUGIN_NAME, opts);
+			// Create the device token with the options
+			m_dev.initAsync(ctx, DEVICE_NAME, opts);
 
-			/// Send JSON descriptor
+			// Send JSON descriptor
 			m_dev.sendJsonDescriptor(inf_psmove_osvr_connector_json);
 
-			/// Register update callback
+			// Register update callback
 			m_dev.registerUpdateCallback(this);
 
 		}
@@ -123,126 +109,55 @@ namespace {
 				c_poses[2] = PSMtoOSVRPoseState(&(controllers[2]->ControllerState.PSMoveState.Pose));
 				osvrDeviceTrackerSendPose(m_dev, m_tracker, &c_poses[2], 2);
 			}
-			
+
 			return OSVR_RETURN_SUCCESS;
 		}
 
-  private:
-    osvr::pluginkit::DeviceToken m_dev;
-    OSVR_TrackerDeviceInterface m_tracker;
-	OSVR_ButtonDeviceInterface m_buttons;
+	private:
+		osvr::pluginkit::DeviceToken m_dev;
+		OSVR_TrackerDeviceInterface m_tracker;
+		OSVR_ButtonDeviceInterface m_buttons;
 
-	//OSVR Poses for each controller
-	OSVR_PoseState c_poses[3];
+		//OSVR Poses for each controller
+		OSVR_PoseState c_poses[3];
 
-	//PSMoveService Controller Handles
-	PSMController *controllers[3] = {nullptr, nullptr, nullptr};
-	int hmdControllerID = -1;
-	int leftControllerID = -1;
-	int rightControllerID = -1;
-	
-	struct AxisAngle { double a, x, y, z; };
+		//PSMoveService Controller Handles
+		PSMController *controllers[3] = { nullptr, nullptr, nullptr };
+		int hmdControllerID = -1;
+		int leftControllerID = -1;
+		int rightControllerID = -1;
 
-	OSVR_PoseState PSMtoOSVRPoseState(const PSMPosef *psmPose) {
+		OSVR_PoseState PSMtoOSVRPoseState(const PSMPosef *psmPose) {
+			OSVR_PoseState pstate;
+			osvrQuatSetIdentity(&(pstate.rotation));
+			osvrVec3Zero(&(pstate.translation));
 
-		// I have no idea what this does, i just managed to get it by trial and error. :)
-		OSVR_PoseState pstate;
-		osvrQuatSetIdentity(&(pstate.rotation));
-		osvrVec3Zero(&(pstate.translation));
+			// To convert PSMS Meters into OSVR Centimeters
+			osvrVec3SetX(&(pstate.translation), (psmPose->Position.x / 100));
+			osvrVec3SetY(&(pstate.translation), (psmPose->Position.y / 100));
+			osvrVec3SetZ(&(pstate.translation), (psmPose->Position.z / 100));
 
-		PSMQuatf c_quat = psmPose->Orientation;
-		/* Reverse Orientation
-		osvrVec3SetX(&(pstate.translation), (-psmPose->Position.x / 100));
-		osvrVec3SetY(&(pstate.translation), (psmPose->Position.y / 100));
-		osvrVec3SetZ(&(pstate.translation), (-psmPose->Position.z / 100)); 
-		boost::math::quaternion<double> psm_quat(-c_quat.w, c_quat.x, -c_quat.y, c_quat.z);
-		*/
+			// Just pass straight through for now
+			osvrQuatSetW(&(pstate.rotation), psmPose->Orientation.w); //w
+			osvrQuatSetX(&(pstate.rotation), psmPose->Orientation.x); //x
+			osvrQuatSetY(&(pstate.rotation), psmPose->Orientation.y); //y
+			osvrQuatSetZ(&(pstate.rotation), psmPose->Orientation.z); //z
 
-		osvrVec3SetX(&(pstate.translation), (psmPose->Position.x / 100));
-		osvrVec3SetY(&(pstate.translation), (psmPose->Position.y / 100));
-		osvrVec3SetZ(&(pstate.translation), (psmPose->Position.z / 100));
-		boost::math::quaternion<double> psm_quat(c_quat.w, c_quat.x, c_quat.y, c_quat.z);
-
-		osvrQuatSetW(&(pstate.rotation), psm_quat.R_component_4()); //w
-		osvrQuatSetX(&(pstate.rotation), psm_quat.R_component_1()); //x
-		osvrQuatSetY(&(pstate.rotation), psm_quat.R_component_2()); //y
-		osvrQuatSetZ(&(pstate.rotation), psm_quat.R_component_3()); //z
-
-		return pstate;
-	}
-
-	OSVR_Quaternion quatNormalize(OSVR_Quaternion &original) {
-		double a, b, c, d;
-		a = osvrQuatGetW(&original);
-		b = osvrQuatGetX(&original);
-		c = osvrQuatGetY(&original);
-		d = osvrQuatGetZ(&original);
-		double factor = std::sin(a / 2.0);
-		// Calculate the x, y and z of the quaternion
-		double x = b * factor;
-		double y = c * factor;
-		double z = d * factor;
-		// Calculate the w value by cos( theta / 2 )
-		double w = cos(a / 2.0);
-		double len = std::sqrt(w*w + x*x + y*y + z*z);
-		OSVR_Quaternion normalized = { w, x, y, z };
-		return normalized;
-	}
-
-	AxisAngle quat2AAngle(OSVR_Quaternion &original) {
-		OSVR_Quaternion inner = original;
-		if (osvrQuatGetW(&inner) > 1) { // if w>1 acos and sqrt will produce errors, this cant happen if quaternion is normalised
-			inner = quatNormalize(inner);
+			return pstate;
 		}
-		double angle = 2 * std::acosf(osvrQuatGetW(&inner));
-		double s = std::sqrt(1 - osvrQuatGetW(&inner)*osvrQuatGetW(&inner)); // assuming quaternion normalised then w is less than 1, so term always positive.
-		double x, y, z;
-		if (s < 0.001) { // test to avoid divide by zero, s is always positive due to sqrt
-						 // if s close to zero then direction of axis not important
-			x = osvrQuatGetX(&inner); // if it is important that axis is normalised then replace with x=1; y=z=0;
-			y = osvrQuatGetY(&inner);
-			z = osvrQuatGetZ(&inner);
-		}
-		else {
-			x = osvrQuatGetX(&inner) / s; // normalise axis
-			y = osvrQuatGetY(&inner) / s;
-			z = osvrQuatGetZ(&inner) / s;
-		}
-		return{ angle, x, y, z };
-	}
-
-	OSVR_Quaternion aAngle2Quat(double a1, double x1, double y1, double z1) {
-		double w, x, y, z;
-		x = x1 * std::sin(a1 / 2);
-		y = y1 * std::sin(a1 / 2);
-		z = z1 * std::sin(a1 / 2);
-		w = std::cos(a1 / 2);
-		OSVR_Quaternion newQuat;
-		osvrQuatSetW(&newQuat, w);
-		osvrQuatSetX(&newQuat, x);
-		osvrQuatSetY(&newQuat, y);
-		osvrQuatSetZ(&newQuat, z);
-
-		return newQuat;
-	}
-
-};
-
+	};
 class PSMS_OSVR_Constructor {
 public:
-	/// @brief This is the required signature for a device instantiation
-	/// callback.
 	OSVR_ReturnCode operator()(OSVR_PluginRegContext ctx, const char *params) {
 
-		
 		// Connect to PSMS
-		std::cout << "[" << PLUGIN_NAME << "]: Connecting to PSMoveService" << std::endl;
+		std::cout << CONSOLE_PREFIX << " Connecting to PSMoveService" << std::endl;
 
 		// Connect to the PSM Server (0 - found psmove service, anything else error)
-		int connectResult = PSM_Initialize("localhost", "9512", 1000);
+		int connectResult = PSM_Initialize(PSMOVESERVICE_DEFAULT_ADDRESS, PSMOVESERVICE_DEFAULT_PORT, DEFAULT_TIMEOUT);
 
-		if(connectResult != 0) {
-			std::cout << "[" << PLUGIN_NAME << "]: Could not connect to PSMoveService, make sure to start it before OSVR." << std::endl;
+		if (connectResult != 0) {
+			std::cout << CONSOLE_PREFIX << " Could not connect to PSMoveService, make sure to start it before OSVR." << std::endl;
 			return OSVR_RETURN_FAILURE;
 		}
 
@@ -251,33 +166,53 @@ public:
 		if (params) {
 			Json::Reader r;
 			if (!r.parse(params, root)) {
-				std::cout << "[" << PLUGIN_NAME << "]: Could not parse config parameters!" << std::endl;
+				std::cout << CONSOLE_PREFIX << ": Could not parse config parameters!" << std::endl;
 				return OSVR_RETURN_FAILURE;
 			}
 		}
 
-		std::cout << root << std::endl;
-
-		int hmdControllerID = root.get("hmdController", -1).asInt();
-		int leftHandControllerID = root.get("leftHandController", -1).asInt();
-		int rightHandControllerID = root.get("rightHandController", -1).asInt();
-
-
-		// OK, now that we have our parameters, create the device.
-		osvr::pluginkit::registerObjectForDeletion(ctx, new PSMSDevice(ctx, hmdControllerID, leftHandControllerID, rightHandControllerID));
+		// Get requested controller IDs
+		int controllerIDs[3] = {
+			root.get("hmdController", -1).asInt(), // HMD
+			root.get("leftHandController", -1).asInt(), //Left Hand
+			root.get("rightHandController", -1).asInt() //Right Hand
+		};
+		std::string controllerDesc[3] = { "HMD","Left Hand","Right Hand" };
+		bool doesControllerExist[3] = { false, false, false };
+		PSMControllerList controllerList;
+		
+		PSM_GetControllerList(&controllerList, DEFAULT_TIMEOUT);
+		// Check controllers exist before sending to our device. If they don't, reset back to -1 so our device ignores them
+		// For each controller
+		for (int i = 0; i < 3; i++) {
+			//Check if it matches an ID that is connected (if not -1 already)
+			for (int k = 0; k < controllerList.count; k++) {
+				//Found our controller connected!
+				if (controllerIDs[i] != -1 && controllerList.controller_id[k] == controllerIDs[i]) {
+					std::cout << CONSOLE_PREFIX << " Connected controller " << controllerIDs[i] << " with tracker for " << controllerDesc[i] << std::endl;
+					doesControllerExist[i] = true;
+					break;
+				}
+			}
+			// Cant find our controller connected!
+			if (!doesControllerExist[i]) {
+				std::cout << CONSOLE_PREFIX << " Designated controller with Controller ID " << controllerIDs[i] << " does not seem to be connected..." << std::endl;
+			}
+		}
+		
+		osvr::pluginkit::registerObjectForDeletion(ctx, new PSMSDevice(ctx, controllerIDs[0], controllerIDs[1], controllerIDs[2]));
 
 		return OSVR_RETURN_SUCCESS;
-	}
-
-private:
-};
+		}
+	
+	};
 
 } // namespace
 
 OSVR_PLUGIN(inf_psmove_osvr_connector) {
 
     osvr::pluginkit::PluginContext context(ctx);
-	osvr::pluginkit::registerDriverInstantiationCallback(ctx, "PSMSDevice", new PSMS_OSVR_Constructor);
+	osvr::pluginkit::registerDriverInstantiationCallback(ctx, DEVICE_NAME, new PSMS_OSVR_Constructor);
 
     return OSVR_RETURN_SUCCESS;
 }
