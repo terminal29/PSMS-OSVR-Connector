@@ -76,11 +76,10 @@ namespace {
 				PSM_StartControllerDataStream(rightControllerID, PSMStreamFlags_includePositionData | PSMStreamFlags_includeCalibratedSensorData, 1000);
 			}
 
-			// configure our tracker
+			// configure our trackers, buttons, and analog inputs.
 			osvrDeviceTrackerConfigure(opts, &m_tracker);
-
-			//Configure button steam. 
-			//osvrDeviceButtonConfigure(opts, &m_buttons, 1);
+			osvrDeviceButtonConfigure(opts, &m_buttons, 8*3);
+			osvrDeviceAnalogConfigure(opts, &m_analog, 3);
 
 			// Create the device token with the options
 			m_dev.initAsync(ctx, DEVICE_NAME, opts);
@@ -97,17 +96,25 @@ namespace {
 			PSM_UpdateNoPollMessages();
 			//TODO Check that the controllers are still tracking, otherwise recycle last frame's pose
 
-			if (hmdControllerID != -1) {
-				c_poses[0] = PSMtoOSVRPoseState(&(controllers[0]->ControllerState.PSMoveState.Pose));
-				osvrDeviceTrackerSendPose(m_dev, m_tracker, &c_poses[0], 0);
-			}
-			if (leftControllerID != -1) {
-				c_poses[1] = PSMtoOSVRPoseState(&(controllers[1]->ControllerState.PSMoveState.Pose));
-				osvrDeviceTrackerSendPose(m_dev, m_tracker, &c_poses[1], 1);
-			}
-			if (rightControllerID != -1) {
-				c_poses[2] = PSMtoOSVRPoseState(&(controllers[2]->ControllerState.PSMoveState.Pose));
-				osvrDeviceTrackerSendPose(m_dev, m_tracker, &c_poses[2], 2);
+			for (int i = 0; i < 3; i++) {
+				if (controllers[i] != nullptr) {
+					c_poses[i] = PSMtoOSVRPoseState(&(controllers[i]->ControllerState.PSMoveState.Pose));
+					osvrDeviceTrackerSendPose(m_dev, m_tracker, &c_poses[i], i);
+
+					// Send Trigger value (0-255)
+					osvrDeviceAnalogSetValue(m_dev, m_analog, (int)controllers[i]->ControllerState.PSMoveState.TriggerValue, i);
+
+					// Send button values
+					// There are 8 buttons a controller, so there are 8 * 3 button interfaces.
+					osvrDeviceButtonSetValue(m_dev, m_buttons, (controllers[i]->ControllerState.PSMoveState.CrossButton == PSMButtonState_DOWN), i * 8 + 0);
+					osvrDeviceButtonSetValue(m_dev, m_buttons, (controllers[i]->ControllerState.PSMoveState.SquareButton == PSMButtonState_DOWN), i * 8 + 1);
+					osvrDeviceButtonSetValue(m_dev, m_buttons, (controllers[i]->ControllerState.PSMoveState.CircleButton == PSMButtonState_DOWN), i * 8 + 2);
+					osvrDeviceButtonSetValue(m_dev, m_buttons, (controllers[i]->ControllerState.PSMoveState.TriangleButton == PSMButtonState_DOWN), i * 8 + 3);
+					osvrDeviceButtonSetValue(m_dev, m_buttons, (controllers[i]->ControllerState.PSMoveState.MoveButton == PSMButtonState_DOWN), i * 8 + 4);
+					osvrDeviceButtonSetValue(m_dev, m_buttons, (controllers[i]->ControllerState.PSMoveState.PSButton == PSMButtonState_DOWN), i * 8 + 5);
+					osvrDeviceButtonSetValue(m_dev, m_buttons, (controllers[i]->ControllerState.PSMoveState.StartButton == PSMButtonState_DOWN), i * 8 + 6);
+					osvrDeviceButtonSetValue(m_dev, m_buttons, (controllers[i]->ControllerState.PSMoveState.SelectButton == PSMButtonState_DOWN), i * 8 + 7);
+				}
 			}
 
 			return OSVR_RETURN_SUCCESS;
@@ -117,6 +124,7 @@ namespace {
 		osvr::pluginkit::DeviceToken m_dev;
 		OSVR_TrackerDeviceInterface m_tracker;
 		OSVR_ButtonDeviceInterface m_buttons;
+		OSVR_AnalogDeviceInterface m_analog;
 
 		//OSVR Poses for each controller
 		OSVR_PoseState c_poses[3];
