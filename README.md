@@ -2,7 +2,7 @@
 A plugin for OSVR that add support for [PSMoveService](https://github.com/cboulay/PSMoveService/) controllers and HMD's.
 
 # How to use 
-Download the latest release, put *inf_osvr_move.dll* into your *osvr-plugins-0* folder, and put *PSMoveService_CAPI.dll* in the same folder as your OSVR server executable.
+Download the latest release, put *inf_osvr_move.dll* into your *osvr-plugins-0* folder, and put *PSMoveClient_CAPI.dll* in the same folder as your OSVR server executable.
 
 Take a look at this example OSVR server config file.
 ```
