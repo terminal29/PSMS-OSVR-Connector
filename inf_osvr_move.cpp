@@ -125,8 +125,6 @@ namespace {
 					osvrDeviceTrackerSendPose(m_dev, m_tracker, &osvr_hmd_pose, num_tracker_values);
 					num_tracker_values++;
 				}
-				
-				
 			}
 			return OSVR_RETURN_SUCCESS;
 		}
