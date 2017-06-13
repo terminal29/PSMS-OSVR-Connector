@@ -4,32 +4,30 @@ A plugin for OSVR that add support for [PSMoveService](https://github.com/cboula
 # How to use 
 Download the latest release, put *inf_osvr_move.dll* into your *osvr-plugins-0* folder, and put *PSMoveClient_CAPI.dll* in the same folder as your OSVR server executable.
 
-Take a look at this example OSVR server config file.
+Take a look at this example OSVR server config file snippit.
 ```
   "drivers": [{
 		"plugin": "inf_osvr_move",
 		"driver": "MoveDevice",
 		"params": {
-			"params": {
-				"debug":true,
-				"controllers":[
-					{
-						"name":"regular_controller",
-						"type":0,
-						"id": 0
-					},
-					{
-						"name":"pingPongHMD",
-						"type":3,
-						"id": 1
-					},
-					{
-						"name":"NAVI CONTROLLER",
-						"type":1,
-						"id": 2
-					}
-				]
-			}
+			"debug":true,
+			"controllers":[
+				{
+					"name":"regular_controller",
+					"type":0,
+					"id": 0
+				},
+				{
+					"name":"pingPongHMD",
+					"type":3,
+					"id": 1
+				},
+				{
+					"name":"NAVI CONTROLLER",
+					"type":1,
+					"id": 2
+				}
+			]
 		}
 	}],
 	"aliases": {
