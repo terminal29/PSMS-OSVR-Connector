@@ -1,43 +1,83 @@
-// Internal Includes
+
 #include <osvr/PluginKit/PluginKit.h>
 #include <osvr/PluginKit/TrackerInterfaceC.h>
 #include <osvr/PluginKit/AnalogInterfaceC.h>
 #include <osvr/PluginKit/ButtonInterfaceC.h>
 
-// Generated JSON header file
-#include "inf_osvr_move.h"
-
-// Standard includes
-#include <chrono>
-#include <thread>
 #include <iostream>
-#include <string>
-#include <json/json.h>
 
-// 3rd party includes
 #include <PSMoveClient_CAPI.h>
 #include <ClientGeometry_CAPI.h>
 
-// 1st party includes
-#include "controller.h"
-#include "util.h"
+#include <json/json.h>
 
-#define DEFAULT_TIMEOUT 5000
-#define DEVICE_NAME "MoveDevice"
+namespace 
+{
+	const std::string DEVICE_NAME = "MoveDevice";
+	std::vector<std::pair<std::string, PSMController*>> move_controllers;
+	std::vector<std::pair<std::string, PSMController*>> navi_controllers;
+	std::vector<std::pair<std::string, PSMController*>> ds4_controllers;
+	std::vector<std::pair<std::string, PSMController*>> virtual_controllers;
+	std::vector<std::pair<std::string, PSMHeadMountedDisplay*>> virtual_hmds;
+	std::vector<std::pair<std::string, PSMHeadMountedDisplay*>> psvr_hmds;
+	bool display_json = false;
 
-namespace {
-	class Move_Device {
-		public:
+	std::string psm_error_str(PSMResult result) {
+		switch (result) {
+		case PSMResult_Canceled:
+			return "Connection cancelled";
+		case PSMResult_Error:
+			return "Connection error";
+		case PSMResult_NoData:
+			return "No data received";
+		case PSMResult_Timeout:
+			return "Connection timed out";
+		default:
+			return "Unknown error code";
+		}
+	}
 
-		Move_Device(OSVR_PluginRegContext ctx, std::vector<Controller> req_controllers, bool display_JSON):controllers(req_controllers) {
+	class Logger {
+	public:
+		Logger(OSVR_PluginRegContext& ctx):ctx_(ctx){};
+		~Logger() {};
+		std::ostream& get() {
+			return log_stream_;
+		}
+		void send(bool flush = true) {
+			OSVR_LogLevel level = OSVR_LOGLEVEL_INFO;
+			if (warning_)
+				level = OSVR_LOGLEVEL_WARN;
+			osvr::pluginkit::log(ctx_, level, log_stream_.str().c_str());
+			if (flush) {
+				log_stream_.str("");
+				warning_ = false;
+			}
+		}
+		void set_warning(bool toggle) {
+			warning_ = toggle;
+		}
+		private:
+			OSVR_PluginRegContext& ctx_;
+			std::stringstream log_stream_;
+			bool warning_ = false;
+	};
+
+	class MoveDevice {
+	public:
+
+		MoveDevice(OSVR_PluginRegContext ctx){
 			OSVR_DeviceInitOptions opts = osvrDeviceCreateInitOptions(ctx);
 			Json::Value json_descriptor = generate_json_descriptor();
+			if (display_json) {
+				Logger log(ctx);
+				log.get() << json_descriptor.toStyledString();
+				log.send();
+			}
 			osvrDeviceTrackerConfigure(opts, &m_tracker);
 			osvrDeviceButtonConfigure(opts, &m_buttons, json_descriptor["interfaces"]["button"]["count"].asInt());
 			osvrDeviceAnalogConfigure(opts, &m_analog, json_descriptor["interfaces"]["analog"]["count"].asInt());
 			m_dev.initAsync(ctx, DEVICE_NAME, opts);
-			if (display_JSON)
-				std::cout << PRNT_PFX << json_descriptor.toStyledString() << std::endl;
 			m_dev.sendJsonDescriptor(json_descriptor.toStyledString());
 			m_dev.registerUpdateCallback(this);
 		}
@@ -46,193 +86,276 @@ namespace {
 			PSM_UpdateNoPollMessages();
 
 			std::this_thread::sleep_for(std::chrono::milliseconds(10));
+			
+			int num_trackers = 0;
+			int num_analogs = 0;
+			int num_buttons = 0;
 
-			//Check for connections and validity
+			// Update Move Controllers
+			for (int i = 0; i < move_controllers.size(); i++) {
+				std::string& con_name = move_controllers.at(i).first;
+				PSMController* con = move_controllers.at(i).second;
+				
+				// Send Pose to Tracker
+				PSMPosef con_pose_p = con->ControllerState.PSMoveState.Pose;
+				OSVR_PoseState con_pose_o = psm_to_osvr_posestate(&con_pose_p);
+				osvrDeviceTrackerSendPose(m_dev, m_tracker, &con_pose_o, num_trackers++);
 
-			int num_tracker_values = 0;
-			int num_analog_values = 0;
-			int num_digital_buttons = 0;
-			for (int i = 0; i < controllers.size(); i++) {
-				if (controllers.at(i).device_type == 0) {
-					PSMController* remote_con_ptr = (PSMController*)(controllers.at(i).psm_device_ptr);
-					PSMPosef con_pose = remote_con_ptr->ControllerState.PSMoveState.Pose;
-					PSMButtonState con_button_states[9] = {
-						remote_con_ptr->ControllerState.PSMoveState.TriangleButton,
-						remote_con_ptr->ControllerState.PSMoveState.CircleButton,
-						remote_con_ptr->ControllerState.PSMoveState.CrossButton,
-						remote_con_ptr->ControllerState.PSMoveState.SquareButton,
-						remote_con_ptr->ControllerState.PSMoveState.SelectButton,
-						remote_con_ptr->ControllerState.PSMoveState.StartButton,
-						remote_con_ptr->ControllerState.PSMoveState.PSButton,
-						remote_con_ptr->ControllerState.PSMoveState.MoveButton,
-						remote_con_ptr->ControllerState.PSMoveState.TriggerButton
-					};
+				// Send analog (trigger) value
+				osvrDeviceAnalogSetValue(m_dev, m_analog, con->ControllerState.PSMoveState.TriggerValue, num_analogs++);
 
-					int con_analog_state = remote_con_ptr->ControllerState.PSMoveState.TriggerValue;
+				// Send button values
+				PSMButtonState con_button_states[] = {
+					con->ControllerState.PSMoveState.TriangleButton,
+					con->ControllerState.PSMoveState.CircleButton,
+					con->ControllerState.PSMoveState.CrossButton,
+					con->ControllerState.PSMoveState.SquareButton,
+					con->ControllerState.PSMoveState.SelectButton,
+					con->ControllerState.PSMoveState.StartButton,
+					con->ControllerState.PSMoveState.PSButton,
+					con->ControllerState.PSMoveState.MoveButton,
+					con->ControllerState.PSMoveState.TriggerButton
+				};
+				for (int j = 0; j < std::size(con_button_states); j++)
+					osvrDeviceButtonSetValue(m_dev, m_buttons, (con_button_states[j] == PSMButtonState_DOWN), num_buttons++);
 
-					osvrDeviceAnalogSetValue(m_dev, m_analog, con_analog_state, num_analog_values);
-					num_analog_values++;
-					
-					OSVR_PoseState osvr_con_pose = psm_to_osvr_posestate(&con_pose);
-					osvrDeviceTrackerSendPose(m_dev, m_tracker, &osvr_con_pose, num_tracker_values);
-					num_tracker_values++;
-
-					for (int j = 0; j < 9; j++) {
-						osvrDeviceButtonSetValue(m_dev, m_buttons, (con_button_states[j] == PSMButtonState_DOWN), num_digital_buttons);
-						num_digital_buttons++;
-					}
-				}
-				if (controllers.at(i).device_type == 1) {
-					PSMController* remote_con_ptr = (PSMController*)(controllers.at(i).psm_device_ptr);
-					PSMButtonState con_button_states[11] = {
-						remote_con_ptr->ControllerState.PSNaviState.L1Button,
-						remote_con_ptr->ControllerState.PSNaviState.L2Button,
-						remote_con_ptr->ControllerState.PSNaviState.L3Button,
-						remote_con_ptr->ControllerState.PSNaviState.CircleButton,
-						remote_con_ptr->ControllerState.PSNaviState.CrossButton,
-						remote_con_ptr->ControllerState.PSNaviState.PSButton,
-						remote_con_ptr->ControllerState.PSNaviState.TriggerButton,
-						remote_con_ptr->ControllerState.PSNaviState.DPadUpButton,
-						remote_con_ptr->ControllerState.PSNaviState.DPadRightButton,
-						remote_con_ptr->ControllerState.PSNaviState.DPadDownButton,
-						remote_con_ptr->ControllerState.PSNaviState.DPadLeftButton
-					};
-					int con_analog_states[3] = {
-						remote_con_ptr->ControllerState.PSNaviState.TriggerValue,
-						(int)(remote_con_ptr->ControllerState.PSNaviState.Stick_XAxis * 255),
-						(int)(remote_con_ptr->ControllerState.PSNaviState.Stick_YAxis * 255)
-					};
-					for (int j = 0; j < 3; j++) {
-						osvrDeviceAnalogSetValue(m_dev, m_analog, con_analog_states[j], num_analog_values);
-						num_analog_values++;
-					}
-					for (int j = 0; j < 11; j++) {
-						osvrDeviceButtonSetValue(m_dev, m_buttons, (con_button_states[j] == PSMButtonState_DOWN), num_digital_buttons);
-						num_digital_buttons++;
-					}
-				}
-				if (controllers.at(i).device_type == 2) {
-					PSMHeadMountedDisplay* remote_hdm_ptr = (PSMHeadMountedDisplay*)(controllers.at(i).psm_device_ptr);
-					PSMPosef hmd_pose = remote_hdm_ptr->HmdState.MorpheusState.Pose;
-					OSVR_PoseState osvr_hmd_pose = psm_to_osvr_posestate(&hmd_pose);
-					osvrDeviceTrackerSendPose(m_dev, m_tracker, &osvr_hmd_pose, num_tracker_values);
-					num_tracker_values++;
-				}
-				if (controllers.at(i).device_type == 3) {
-					PSMHeadMountedDisplay* remote_hdm_ptr = (PSMHeadMountedDisplay*)(controllers.at(i).psm_device_ptr);
-					PSMPosef hmd_pose = remote_hdm_ptr->HmdState.VirtualHMDState.Pose;
-					OSVR_PoseState osvr_hmd_pose = psm_to_osvr_posestate(&hmd_pose);
-					osvrDeviceTrackerSendPose(m_dev, m_tracker, &osvr_hmd_pose, num_tracker_values);
-					num_tracker_values++;
-				}
 			}
+
+			for (int i = 0; i < navi_controllers.size(); i++) {
+				std::string& con_name = navi_controllers.at(i).first;
+				PSMController* con = navi_controllers.at(i).second;
+
+				// Send Analogs
+				int con_analog_states[] = {
+					con->ControllerState.PSNaviState.TriggerValue,
+					con->ControllerState.PSNaviState.Stick_XAxis,
+					con->ControllerState.PSNaviState.Stick_YAxis
+				};
+				for(int j = 0; j < std::size(con_analog_states); j++)
+					osvrDeviceAnalogSetValue(m_dev, m_analog, con_analog_states[j], num_analogs++);
+
+				// Send buttons
+				PSMButtonState con_button_states[] = {
+					con->ControllerState.PSNaviState.L1Button,
+					con->ControllerState.PSNaviState.L2Button,
+					con->ControllerState.PSNaviState.L3Button,
+					con->ControllerState.PSNaviState.CircleButton,
+					con->ControllerState.PSNaviState.CrossButton,
+					con->ControllerState.PSNaviState.PSButton,
+					con->ControllerState.PSNaviState.TriggerButton,
+					con->ControllerState.PSNaviState.DPadUpButton,
+					con->ControllerState.PSNaviState.DPadRightButton,
+					con->ControllerState.PSNaviState.DPadDownButton,
+					con->ControllerState.PSNaviState.DPadLeftButton
+				};
+				
+				for (int j = 0; j < std::size(con_button_states); j++)
+					osvrDeviceButtonSetValue(m_dev, m_buttons, (con_button_states[j] == PSMButtonState_DOWN), num_buttons++);
+			}
+
+			for (int i = 0; i < ds4_controllers.size(); i++) {
+				std::string& con_name = ds4_controllers.at(i).first;
+				PSMController* con = ds4_controllers.at(i).second;
+
+				// Send Pose to Tracker
+				PSMPosef con_pose_p = con->ControllerState.PSDS4State.Pose;
+				OSVR_PoseState con_pose_o = psm_to_osvr_posestate(&con_pose_p);
+				osvrDeviceTrackerSendPose(m_dev, m_tracker, &con_pose_o, num_trackers++);
+
+				// Send Analogs
+				int con_analog_states[] = {
+					(int)(255 * (con->ControllerState.PSDS4State.LeftAnalogX + 1) / 2),
+					(int)(255 * (con->ControllerState.PSDS4State.LeftAnalogY + 1) / 2),
+					(int)(255 * (con->ControllerState.PSDS4State.RightAnalogY + 1) / 2),
+					(int)(255 * (con->ControllerState.PSDS4State.RightAnalogY + 1) / 2),
+					(int)(255 * con->ControllerState.PSDS4State.LeftTriggerValue),
+					(int)(255 * con->ControllerState.PSDS4State.RightTriggerValue)
+				};
+				for (int j = 0; j < std::size(con_analog_states); j++)
+					osvrDeviceAnalogSetValue(m_dev, m_analog, con_analog_states[j], num_analogs++);
+
+				// Send Buttons
+				PSMButtonState con_button_states[] = {
+					con->ControllerState.PSDS4State.DPadUpButton,
+					con->ControllerState.PSDS4State.DPadDownButton,
+					con->ControllerState.PSDS4State.DPadLeftButton,
+					con->ControllerState.PSDS4State.DPadRightButton,
+					con->ControllerState.PSDS4State.SquareButton,
+					con->ControllerState.PSDS4State.CrossButton,
+					con->ControllerState.PSDS4State.CircleButton,
+					con->ControllerState.PSDS4State.TriangleButton,
+					con->ControllerState.PSDS4State.L1Button,
+					con->ControllerState.PSDS4State.R1Button,
+					con->ControllerState.PSDS4State.L2Button,
+					con->ControllerState.PSDS4State.R2Button,
+					con->ControllerState.PSDS4State.L3Button,
+					con->ControllerState.PSDS4State.R3Button,
+					con->ControllerState.PSDS4State.ShareButton,
+					con->ControllerState.PSDS4State.OptionsButton,
+					con->ControllerState.PSDS4State.PSButton,
+					con->ControllerState.PSDS4State.TrackPadButton
+				};
+				for (int j = 0; j < std::size(con_button_states); j++)
+					osvrDeviceButtonSetValue(m_dev, m_buttons, (con_button_states[j] == PSMButtonState_DOWN), num_buttons++);
+
+			}
+
+			for (int i = 0; i < virtual_controllers.size(); i++) {
+				std::string& con_name = virtual_controllers.at(i).first;
+				PSMController* con = virtual_controllers.at(i).second;
+
+				// Send Pose to Tracker
+				PSMPosef con_pose_p = con->ControllerState.VirtualController.Pose;
+				OSVR_PoseState con_pose_o = psm_to_osvr_posestate(&con_pose_p);
+				osvrDeviceTrackerSendPose(m_dev, m_tracker, &con_pose_o, num_trackers++);
+
+			}
+
+			for (int i = 0; i < virtual_hmds.size(); i++) {
+				std::string& hmd_name = virtual_hmds.at(i).first;
+				PSMHeadMountedDisplay* hmd = virtual_hmds.at(i).second;
+				
+				// Send Pose to Tracker
+				PSMPosef con_pose_p = hmd->HmdState.VirtualHMDState.Pose;
+				OSVR_PoseState con_pose_o = psm_to_osvr_posestate(&con_pose_p);
+				osvrDeviceTrackerSendPose(m_dev, m_tracker, &con_pose_o, num_trackers++);
+
+			}
+
+			for (int i = 0; i < psvr_hmds.size(); i++) {
+				std::string& hmd_name = psvr_hmds.at(i).first;
+				PSMHeadMountedDisplay* hmd = psvr_hmds.at(i).second;
+
+				// Send Pose to Tracker
+				PSMPosef con_pose_p = hmd->HmdState.MorpheusState.Pose;
+				OSVR_PoseState con_pose_o = psm_to_osvr_posestate(&con_pose_p);
+				osvrDeviceTrackerSendPose(m_dev, m_tracker, &con_pose_o, num_trackers++);
+
+			}
+
+
+
+
 			return OSVR_RETURN_SUCCESS;
 		}
 
+		~MoveDevice(){
+
+		}
+
 	private:
-		std::vector<Controller> controllers;
 		osvr::pluginkit::DeviceToken m_dev;
 		OSVR_TrackerDeviceInterface m_tracker;
 		OSVR_ButtonDeviceInterface m_buttons;
 		OSVR_AnalogDeviceInterface m_analog;
+
 
 		Json::Value generate_json_descriptor() {
 			Json::Value descriptor;
 			descriptor["deviceVendor"] = "Sony";
 			descriptor["deviceName"] = DEVICE_NAME;
 			descriptor["author"] = "InfiniteLlamas";
-			descriptor["version"] = "0.3a";
+			descriptor["version"] = "0.4a";
 			//descriptor["lastModified"] = std::string(__DATE__).append("T").append(__TIME__).append("Z");
-			
+
 			Json::Value interfaces;
 			Json::Value semantic;
-			
+
 			Json::Value tracker;
 			tracker["position"] = true;
 			tracker["orientation"] = true;
-			int num_tracker_values = 0;
-			for (int i = 0; i < controllers.size(); i++) {
-				if (controllers.at(i).device_type == 0 || controllers.at(i).device_type == 2 || controllers.at(i).device_type == 3) {
-					
-					std::stringstream tracker_desc;
-					tracker_desc << "tracker/" << num_tracker_values;
-					std::string dev_name_tracker = controllers.at(i).device_name;
-					semantic[dev_name_tracker.append("/tracker")] = tracker_desc.str();
-					
-					num_tracker_values++;
-					
-				}
-			}
 			interfaces["tracker"] = tracker;
 
-			Json::Value analog;
-			int num_analog_values = 0;
-			for (int i = 0; i < controllers.size(); i++) {
-				if (controllers.at(i).device_type == 0) {
+			int num_trackers = 0;
+			int num_analogs = 0;
+			int num_buttons = 0;
 
-					std::stringstream tracker_desc;
-					tracker_desc << "analog/" << num_analog_values;
-					std::string dev_name = controllers.at(i).device_name;
-					semantic[dev_name.append("/trigger")] = tracker_desc.str();
-
-					num_analog_values++;
+			// Move Controllers
+			for (int i = 0; i < move_controllers.size(); i++) {
+				
+				// Add tracker to semantic
+				semantic[move_controllers.at(i).first + "/tracker"] = "tracker/" + std::to_string(num_trackers++);
+				
+				// Add buttons to semantic
+				std::string button_names[] = { "/triangle","/circle","/cross","/square","/select","/start","/ps","/move","/triggerbtn" };
+				for (int j = 0; j < std::size(button_names); j++) {
+					semantic[move_controllers.at(i).first + button_names[j]] = "button/" + std::to_string(num_buttons++);
 				}
-				if (controllers.at(i).device_type == 1) {
 
-					std::stringstream tracker_desc;
-					std::string dev_name = controllers.at(i).device_name;
-					tracker_desc << "analog/" << num_analog_values;
-					semantic[dev_name.append("/trigger")] = tracker_desc.str();
-					tracker_desc.str("");
-					tracker_desc << "analog/" << num_analog_values + 1;
-					dev_name = controllers.at(i).device_name;
-					semantic[dev_name.append("/stickx")] = tracker_desc.str();
-					tracker_desc.str("");
-					tracker_desc << "analog/" << num_analog_values + 2;
-					dev_name = controllers.at(i).device_name;
-					semantic[dev_name.append("/sticky")] = tracker_desc.str();
-
-					num_analog_values += 3;
-				}
+				// Add analog (trigger) to semantic
+				semantic[move_controllers.at(i).first + "/trigger"] = "analog/" + std::to_string(num_analogs++);
+				
 			}
-			analog["count"] = num_analog_values;
+
+			// Navigation Controllers
+			for (int i = 0; i < navi_controllers.size(); i++) {
+				
+				//Add buttons to semantic
+				std::string button_names[] = { "/l1","/l2","/l3","/circle","/cross","/ps","/triggerbtn","/dpadup","/dpadright","/dpaddown","/dpadleft" };
+				for (int j = 0; j < std::size(button_names); j++)
+					semantic[navi_controllers.at(i).first + button_names[j]] = "button/" + std::to_string(num_buttons++);
+				
+				//Add analogs to semantic
+				std::string analog_names[] = { "/trigger", "/stickx","/sticky" };
+				for (int j = 0; j < std::size(analog_names); j++)
+					semantic[navi_controllers.at(i).first + analog_names[j]] = "analog/" + std::to_string(num_analogs++);
+			}
+
+			// Ds4 Controllers
+			for (int i = 0; i < ds4_controllers.size(); i++) {
+
+				// Add tracker to semantic
+				semantic[ds4_controllers.at(i).first + "/tracker"] = "tracker/" + std::to_string(num_trackers++);
+
+				//Add buttons to semantic
+				std::string button_names[] = { "/dpadup","/dpaddown","/dpadleft","/dpadright", "/square","/cross","/circle","/triangle","/l1","/r1","/l2","/r2","/l3","/r3","/share","/options","/ps","/trackpad" };
+				for (int j = 0; j < std::size(button_names); j++)
+					semantic[ds4_controllers.at(i).first + button_names[j]] = "button/" + std::to_string(num_buttons++);
+
+				//Add analogs to semantic
+				std::string analog_names[] = { "/lstickx", "/lsticky", "rstickx", "rsticky", "/ltrigger", "/rtrigger"};
+				for (int j = 0; j < std::size(analog_names); j++)
+					semantic[ds4_controllers.at(i).first + analog_names[j]] = "analog/" + std::to_string(num_analogs++);
+
+
+			}
+
+			// Virtual Controllers
+			for (int i = 0; i < virtual_controllers.size(); i++) {
+				// Add tracker to semantic
+				semantic[virtual_controllers.at(i).first + "/tracker"] = "tracker/" + std::to_string(num_trackers++);
+
+				// TODO: Do virtual controllers have buttons & analog inputs ?
+			}
+
+			// Virtual HMDs
+			for (int i = 0; i < virtual_hmds.size(); i++) {
+				// Add tracker to semantic
+				semantic[virtual_hmds.at(i).first + "/tracker"] = "tracker/" + std::to_string(num_trackers++);
+
+			}
+
+			// PSVR HMDs
+			for (int i = 0; i < psvr_hmds.size(); i++) {
+				// Add tracker to semantic
+				semantic[psvr_hmds.at(i).first + "/tracker"] = "tracker/" + std::to_string(num_trackers++);
+
+			}
+
+			Json::Value analog;
+			analog["count"] = num_analogs;
 			Json::Value traits(Json::arrayValue);
 			Json::Value trait_value;
 			trait_value["min"] = 0;
 			trait_value["max"] = 255;
 			traits[0] = trait_value;
 			analog["traits"] = traits;
-			interfaces["analog"] = analog;
 
 			Json::Value button;
-			int num_digital_buttons = 0;
-			for (int i = 0; i < controllers.size(); i++) {
-				if (controllers.at(i).device_type == 0) {
-					std::string button_names[9] = { "/triangle","/circle","/cross","/square","/select","/start","/ps","/move","/triggerbtn" };
-					std::stringstream button_desc;
-					std::string dev_name;
-					for (int j = 0; j < 9; j++) {
-						button_desc.str("");
-						button_desc << "button/" << num_digital_buttons;
-						dev_name = controllers.at(i).device_name;
-						semantic[dev_name.append(button_names[j])] = button_desc.str();
-						num_digital_buttons++;
-					}
-				}
-				if (controllers.at(i).device_type == 1) {
-					std::string button_names[11] = { "/l1","/l2","/l3","/circle","/cross","/ps","/triggerbtn","/dpadup","/dpadright","/dpaddown","/dpadleft" };
-					std::stringstream button_desc;
-					std::string dev_name;
-					for (int j = 0; j < 11; j++) {
-						button_desc.str("");
-						button_desc << "button/" << num_digital_buttons;
-						dev_name = controllers.at(i).device_name;
-						semantic[dev_name.append(button_names[j])] = button_desc.str();
-						num_digital_buttons++;
-					}
-				}
-			}
-			button["count"] = num_digital_buttons;
+			button["count"] = num_buttons;
+
+			
+			interfaces["analog"] = analog;
 			interfaces["button"] = button;
 			descriptor["interfaces"] = interfaces;
 			descriptor["semantic"] = semantic;
@@ -263,83 +386,190 @@ namespace {
 	class OSVR_Move_Constructor {
 	public:
 		OSVR_ReturnCode operator()(OSVR_PluginRegContext ctx, const char *params) {
-			std::vector<Controller> controllers;
-			bool display_JSON = false;
-			std::cout << PRNT_PFX << " Loading config..." << std::endl;
+			Logger log(ctx);
+
+			log.get() << "Attempting connection with PSMoveService...";
+			log.send();
+
+			// Attempt to connect to the PSMoveService server
+			for (int i = 0; i < 5; i++) {
+				
+				log.get() << "Attempt " << (i+1);
+				log.send();
+				
+				PSMResult result = PSM_Initialize(PSMOVESERVICE_DEFAULT_ADDRESS, PSMOVESERVICE_DEFAULT_PORT, PSM_DEFAULT_TIMEOUT);
+				
+				if (result == PSMResult_Success)
+					break;
+
+				if (i == 4) {
+					log.get() << "Failed to connect to PSMoveService with error: [" << result << "] " << psm_error_str(result);
+					log.set_warning(true);
+					log.send();
+					return OSVR_RETURN_FAILURE;
+				}
+			}
+
+			// Returns array index value appears at, -1 if it doesnt appear in the array
+			auto find = [](int* arr, int count, int value) -> int {
+				for (int i = 0; i < count; i++) {
+					if (arr[i] == value)
+						return i;
+				}
+				return -1;
+			};
+
+			// Attempt to connect all requested controllers
 			Json::Value config_params;
+			log.get() << "Attempting connection with controllers/HMDs...";
+			log.send();
 			if (params) {
 				Json::Reader reader;
 				bool parse_result = reader.parse(params, config_params);
 				if (!parse_result) {
-					std::cout << PRNT_PFX << " Invalid config, load failed!" << std::endl;
+					log.get() << "Error occurred parsing config file:" << std::endl << reader.getFormattedErrorMessages();
+					log.set_warning(true);
+					log.send();
 					return OSVR_RETURN_FAILURE;
 				}
-				display_JSON = config_params.get("debug", false).asBool();
-				int req_con_num = 0;
-				for (Json::Value controller : config_params["controllers"]) {
-					req_con_num++;
-					std::string cur_con_name = controller.get("name", "invalid name").asString();
-					int cur_con_id = controller.get("id", -1).asInt();
-					int cur_con_type = controller.get("type", -1).asInt();
-					if (cur_con_name.length() > 0 && cur_con_id >= 0 && 5 > cur_con_type && cur_con_type >= 0) {
-						Controller cur_controller = Controller(cur_con_name, cur_con_id, cur_con_type);
-						controllers.push_back(cur_controller);
-						std::cout << PRNT_PFX << " Parsed controller #" << cur_con_id << " " << cur_con_name << " as a " << (device_types)[cur_con_type].second << std::endl;
+				try {
+					display_json = config_params.get("debug", false).asBool();
+					PSMHmdList hmd_list;
+					PSMControllerList con_list;
+					PSM_GetHmdList(&hmd_list, 5000);
+					PSM_GetControllerList(&con_list, 5000);
+
+					for (Json::Value controller : config_params["controllers"]) {
+
+						std::string controller_name = controller["name"].asString();
+						std::string controller_type = controller["type"].asString();
+						int controller_id = controller.get("id", -1).asInt();
+
+						log.get() << "Parsing device " << controller_name << " as a " << controller_type;
+						log.send();
+
+						int con_pos = find(con_list.controller_id, con_list.count, controller_id);
+						int hmd_pos = find(hmd_list.hmd_id, hmd_list.count, controller_id);
+
+						if (con_pos == -1 && hmd_pos == -1) {
+							log.get() << "Controller or HMD [id:" << controller_id << "] \"" << controller_name << "\" is not connected, please connect the controller or HMD and restart OSVR.";
+							log.set_warning(true);
+							log.send();
+							return OSVR_RETURN_FAILURE;
+						}
+						if (controller_type.compare("Move") == 0) { // We are looking for a move controller
+							if (con_list.controller_type[con_pos] != PSMController_Move) {
+								log.get() << "Controller [id:" << controller_id << "] \"" << controller_name << "\" is not a Move controller, please correct this and restart OSVR.";
+								log.set_warning(true);
+								log.send();
+								return OSVR_RETURN_FAILURE;
+							}
+							PSMController* move_controller = PSM_GetController(controller_id);
+							PSM_AllocateControllerListener(controller_id);
+							PSM_StartControllerDataStream(controller_id, PSMStreamFlags_includePositionData | PSMStreamFlags_includeCalibratedSensorData | PSMStreamFlags_includePhysicsData, 5000);
+							move_controllers.emplace_back(std::make_pair(controller_name, move_controller));
+						}
+						else if (controller_type.compare("Navi") == 0) { // We are looking for a navigation controller
+							if (con_list.controller_type[con_pos] != PSMController_Navi) {
+								log.get() << "Controller [id:" << controller_id << "] \"" << controller_name << "\" is not a Navigation controller, please correct this and restart OSVR.";
+								log.set_warning(true);
+								log.send();
+								return OSVR_RETURN_FAILURE;
+							}
+							PSMController* navi_controller = PSM_GetController(controller_id);
+							PSM_AllocateControllerListener(controller_id);
+							PSM_StartControllerDataStream(controller_id, PSMStreamFlags_includePositionData | PSMStreamFlags_includeCalibratedSensorData | PSMStreamFlags_includePhysicsData, 5000);
+							navi_controllers.emplace_back(std::make_pair(controller_name, navi_controller));
+						}
+						else if (controller_type.compare("DualShock4") == 0) { // We are looking for a ds4 controller
+							if (con_list.controller_type[con_pos] != PSMController_DualShock4) {
+								log.get() << "Controller [id:" << controller_id << "] \"" << controller_name << "\" is not a DualShock4 controller, please correct this and restart OSVR.";
+								log.set_warning(true);
+								log.send();
+								return OSVR_RETURN_FAILURE;
+							}
+							PSMController* ds4_controller = PSM_GetController(controller_id);
+							PSM_AllocateControllerListener(controller_id);
+							PSM_StartControllerDataStream(controller_id, PSMStreamFlags_includePositionData | PSMStreamFlags_includeCalibratedSensorData | PSMStreamFlags_includePhysicsData, 5000);
+							ds4_controllers.emplace_back(std::make_pair(controller_name, ds4_controller));
+						}
+						else if (controller_type.compare("VirtualMove") == 0) { // We are looking for a virtual controller
+							if (con_list.controller_type[con_pos] != PSMController_Virtual) {
+								log.get() << "Controller [id:" << controller_id << "] \"" << controller_name << "\" is not a VirtualMove controller, please correct this and restart OSVR.";
+								log.set_warning(true);
+								log.send();
+								return OSVR_RETURN_FAILURE;
+							}
+							PSMController* virtual_controller = PSM_GetController(controller_id);
+							PSM_AllocateControllerListener(controller_id);
+							PSM_StartControllerDataStream(controller_id, PSMStreamFlags_includePositionData | PSMStreamFlags_includeCalibratedSensorData | PSMStreamFlags_includePhysicsData, 5000);
+							virtual_controllers.emplace_back(std::make_pair(controller_name, virtual_controller));
+						}
+						else if (controller_type.compare("VirtualHMD") == 0) { // We are looking for a virtual HMD
+							if (hmd_list.hmd_type[hmd_pos] != PSMHmd_Virtual) {
+								log.get() << "HMD [id:" << controller_id << "] \"" << controller_name << "\" is not a VirtualHMD HMD, please correct this and restart OSVR.";
+								log.set_warning(true);
+								log.send();
+								return OSVR_RETURN_FAILURE;
+							}
+							PSMHeadMountedDisplay* virtual_hmd = PSM_GetHmd(controller_id);
+							PSM_AllocateHmdListener(controller_id);
+							PSM_StartHmdDataStream(controller_id, PSMStreamFlags_includePositionData | PSMStreamFlags_includeCalibratedSensorData | PSMStreamFlags_includePhysicsData, 5000);
+							virtual_hmds.emplace_back(std::make_pair(controller_name, virtual_hmd));
+
+						}
+						else if (controller_type.compare("PSVR") == 0) { // We are looking for a Morpheus headset
+							if (hmd_list.hmd_type[hmd_pos] != PSMHmd_Virtual) {
+								log.get() << "HMD [id:" << controller_id << "] \"" << controller_name << "\" is not a PSVR HMD, please correct this and restart OSVR.";
+								log.set_warning(true);
+								log.send();
+								return OSVR_RETURN_FAILURE;
+							}
+							PSMHeadMountedDisplay* psvr_hmd = PSM_GetHmd(controller_id);
+							PSM_AllocateHmdListener(controller_id);
+							PSM_StartHmdDataStream(controller_id, PSMStreamFlags_includePositionData | PSMStreamFlags_includeCalibratedSensorData | PSMStreamFlags_includePhysicsData, 5000);
+							psvr_hmds.emplace_back(std::make_pair(controller_name, psvr_hmd));
+						}
+						else {
+							log.get() << "Unknown controller/HMD type \"" << controller_type << "\" for controller id " << controller_id;
+							log.set_warning(true);
+							log.send();
+							log.get() << "Valid types are Move, Navi, DualShock4, VirtualMove, VirtualHMD, and PSVR." ;
+							log.set_warning(true);
+							log.send();
+							return OSVR_RETURN_FAILURE;
+						}
+
+
 					}
-					else {
-						std::cout << PRNT_PFX << " Unable to parse controller #" << req_con_num << std::endl;
-					}
+				}
+				catch (Json::Exception exc) {
+					log.get() << "Exception occured while loading config:" << std::endl << exc.what();
+					log.set_warning(true);
+					log.send();
+					return OSVR_RETURN_FAILURE;
 				}
 			}
 			else {
-				return OSVR_RETURN_SUCCESS;
-			}
-			
-			std::cout << PRNT_PFX << " Attempting connection to PSMove Service..." << std::endl;
-			PSMResult connect_result;
-			int connect_attempts = 0;
-			do {
-				std::cout << PRNT_PFX << " Attempt #" << connect_attempts + 1 << std::endl;
-				connect_result = PSM_Initialize(PSMOVESERVICE_DEFAULT_ADDRESS, PSMOVESERVICE_DEFAULT_PORT, DEFAULT_TIMEOUT);
-				connect_attempts++;
-			} while (connect_result != PSMResult_Success && connect_attempts < 5);
-
-			if (connect_result != PSMResult_Success) {
-				std::cout << PRNT_PFX << " Connection failed: [" << connect_result << "] " << util::get_psm_error_str(connect_result) << std::endl;
+				log.get() << "No controllers specified...";
+				log.set_warning(true);
+				log.send();
 				return OSVR_RETURN_FAILURE;
 			}
 
-			std::cout << PRNT_PFX << " Linking controllers..." << std::endl;
-			for (int i = 0; i < controllers.size(); i++) {
-				init_controller(&(controllers.at(i)));
-			}
-			
-			osvr::pluginkit::registerObjectForDeletion(ctx, new Move_Device(ctx, controllers, display_JSON));
+			log.get() << "Parsed all controllers/HMDs successfully.";
+			log.send();
+
+			osvr::pluginkit::registerObjectForDeletion(ctx, new MoveDevice(ctx));
 			return OSVR_RETURN_SUCCESS;
-		}
-	private:
-		void init_controller(Controller* con) {
-			if (con->device_type == 0 || con->device_type == 1) {
-				PSMController* remote_controller = PSM_GetController(con->device_id);
-				PSM_AllocateControllerListener(con->device_id);
-				PSM_StartControllerDataStream(con->device_id, PSMStreamFlags_includePositionData | PSMStreamFlags_includeCalibratedSensorData | PSMStreamFlags_includePhysicsData, DEFAULT_TIMEOUT);
-				con->psm_device_ptr = remote_controller;
-				con->is_valid = true;
-			}
-			else if (con->device_type == 2 || con->device_type == 3) {
-				PSMHeadMountedDisplay* remote_hmd = PSM_GetHmd(con->device_id);
-				PSM_AllocateHmdListener(con->device_id);
-				PSM_StartHmdDataStream(con->device_id, PSMStreamFlags_includePositionData | PSMStreamFlags_includeCalibratedSensorData | PSMStreamFlags_includePhysicsData, DEFAULT_TIMEOUT);
-				con->psm_device_ptr = remote_hmd;
-				con->is_valid = true;
-			}
 		}
 	};
 
 } // namespace
 
-OSVR_PLUGIN(osvr_move) {
+OSVR_PLUGIN(inf_osvr_move) {
 	osvr::pluginkit::PluginContext context(ctx);
-	osvr::pluginkit::registerDriverInstantiationCallback(ctx, DEVICE_NAME, new OSVR_Move_Constructor);
-    return OSVR_RETURN_SUCCESS;
+	osvr::pluginkit::registerDriverInstantiationCallback(ctx, DEVICE_NAME.c_str(), new OSVR_Move_Constructor);
+	return OSVR_RETURN_SUCCESS;
 }
+

@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 2.8.12)
-project(PSMoveOSVRConnector) # Change this line.
+project(OSVRMove) # Change this line.
 
 # This looks for an osvrConfig.cmake file - most of the time it can be
 # autodetected but you might need to create/extend CMAKE_PREFIX_PATH to include something like
@@ -11,12 +11,12 @@ find_package(osvr REQUIRED)
 # This generates a header file, from the named json file, containing a string literal
 # named com_osvr_example_selfcontained_json (not null terminated)
 # The file must be added as a source file to some target (as below) to be generated.
-osvr_convert_json(inf_osvr_move_json
-    inf_osvr_move.json
-    "${CMAKE_CURRENT_BINARY_DIR}/inf_osvr_move_json.h")
+#osvr_convert_json(inf_osvr_move_json
+#    inf_osvr_move.json
+#    "${CMAKE_CURRENT_BINARY_DIR}/inf_osvr_move_json_json.h")
 
 # Be able to find our generated header file.
-include_directories("${CMAKE_CURRENT_BINARY_DIR}")
+#include_directories("${CMAKE_CURRENT_BINARY_DIR}")
 
 # This is just a helper function wrapping CMake's add_library command that
 # sets up include dirs, libraries, and naming convention (no leading "lib")
@@ -26,7 +26,8 @@ osvr_add_plugin(NAME inf_osvr_move
     CPP # indicates we'd like to use the C++ wrapper
     SOURCES
     inf_osvr_move.cpp
-    "${CMAKE_CURRENT_BINARY_DIR}/inf_osvr_move_json.h")
+ #   "${CMAKE_CURRENT_BINARY_DIR}/inf_osvr_move_json.h"
+ )
 
 # If you use other libraries, find them and add a line like:
-# target_link_libraries(com_osvr_example_selfcontained AnyOtherLibraries)
+# target_link_libraries(inf_osvr_move AnyOtherLibraries)
